@@ -11,6 +11,7 @@
 class BBCodeParser
 {
     const BREAKTAG = '<br />';
+    const ENCODING = 'UTF8';
 
     /**
      * Every BB-code is modelled as an entry in this array. Every array can contain the following keys:
@@ -194,6 +195,26 @@ class BBCodeParser
     }
 
     /**
+     * An array of tags in which url's are not automatically turned into links.
+     * @var array
+     */
+    private static $noAutolinkTags;
+
+    /**
+     * Gets the array of tags in which url's are not automatically turned into links.
+     * @return [type] [description]
+     */
+    private static function getNoAutolinkTags()
+    {
+        if (!isset(self::$noAutolinkTags))
+            self::$noAutolinkTags = array(
+                'url',
+            );
+
+        return self::$noAutolinkTags;
+    }
+
+    /**
      * A dictionary from the first letters of all tags to the codes.
      * @var array
      */
@@ -243,8 +264,66 @@ class BBCodeParser
 
         while ($pos !== false)
         {
+            // Save the previous position.
+            $prevPos = isset($prevPos) ? max($pos, $prevPos) : $pos; 
+
             // Look for next tag candidate.
             $pos = strpos($string, '[', $pos + 1);
+
+            // Make sure we also parse the part after the last tag.
+            if ($pos === false && $prevPos > $pos)
+                $pos = strlen($string) + 1;
+
+            // There is no need in processing single characters.
+            if ($prevPos < $pos - 1)
+            {
+                // Negative positions are bad...
+                $prevPos = max(0, $prevPos);
+
+                // Get the section we want to process.
+                $raw = substr($string, $prevPos, $pos - $prevPos);
+
+                /**
+                 * Autolinking
+                 */
+                // Check whether autolink is disabled currently.
+                $autolink = true;
+                $noAutolinkTags = self::getNoAutolinkTags();
+                foreach ($tagStack as $tag)
+                    if (in_array($tag['tag'], $noAutolinkTags))
+                        $autolink = false;
+
+                // Make sure we are not doing an existing section
+                if (!isset($autolinkedUntil))
+                    $autolinkedUntil = 0;
+                if ($pos < $autolinkedUntil)
+                    $autolink = false;
+                $autolinkedUntil = $pos;
+
+                if ($autolink)
+                    $this->autolinkSection(&$raw);
+
+                /**
+                 * Processing
+                 */
+                // Only process if we actually changed something
+                if ($raw != substr($string, $prevPos, $pos - $prevPos))
+                {
+                    $string = substr($string, 0, $prevPos) . $raw . substr($string, $pos);
+
+                    // We might have added or remove tags, so we want to make sure we don't skip any.
+                    $oldPos = $prevPos + strlen($raw);
+                    $pos = strpos($string, '[', $prevPos);
+                    if ($pos === false)
+                        $pos = $oldPos;             // Just take the old one.
+                    else
+                        $pos = min($pos, $oldPos);  // Take the one that comes first. We will get back to the other later.
+                }
+            }
+
+            // Break if we finished the end of the string.
+            if ($pos >= strlen($string) - 1)
+                break;
 
             // It is really easy to find the first letter of the tag.
             $tagChar = strtolower(substr($string, $pos + 1, 1));
@@ -479,6 +558,37 @@ class BBCodeParser
         $string = strtr($string, array('  ' => '&nbsp;', "\r" => '', "\n" => self::BREAKTAG, self::BREAKTAG. ' ' => self::BREAKTAG . '&nbsp;', '&#13;' => "\n"));
 
         return $string;
+    }
+
+    /**
+     * Automatically turns url's in html links.
+     * @param  string $raw The raw source section.
+     * @return string      The autolinked section.
+     * @todo Automatic e-mail linking
+     */
+    private function autolinkSection(&$raw)
+    {
+        // URL's
+        if ((strpos($raw, '://') !== false || strpos($raw, 'www') !== false) && strpos($raw, '[url') === false)
+        {
+            // Switch out quotes really quick because they can cause problems.
+            $raw = strtr($raw, array('&#039;' => '\'', '&nbsp;' => self::ENCODING == 'UTF8' ? "\xC2\xA0" : "\xA0", '&quot;' => '>">', '"' => '<"<', '&lt;' => '<lt<'));
+
+            // The big regular expression stuff
+            if (is_string($result = preg_replace(array(
+                    '~(?<=[\s>\.(;\'"]|^)((?:http|https)://[\w\-_%@:|]+(?:\.[\w\-_%]+)*(?::\d+)?(?:/[\w\-_\~%\.@!,\?&;=#(){}+:\'\\\\]*)*[/\w\-_\~%@\?;=#}\\\\])~i',
+                    '~(?<=[\s>(\'<]|^)(www(?:\.[\w\-_]+)+(?::\d+)?(?:/[\w\-_\~%\.@!,\?&;=#(){}+:\'\\\\]*)*[/\w\-_\~%@\?;=#}\\\\])~i'
+                ), array(
+                    '[url]$1[/url]',
+                    '[url=http://$1]$1[/url]'
+                ), $raw)))
+            {
+                $raw = $result;
+            }
+
+            // Get the quotes and such back.
+            $raw = strtr($raw, array('\'' => '&#039;', self::ENCODING == 'UTF8' ? "\xC2\xA0" : "\xA0" => '&nbsp;', '>">' => '&quot;', '<"<' => '"', '<lt<' => '&lt;'));
+        }
     }
 
     /**
