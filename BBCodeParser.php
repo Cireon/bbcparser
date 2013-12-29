@@ -16,7 +16,7 @@ class BBCodeParser
     /**
      * Every BB-code is modelled as an entry in this array. Every array can contain the following keys:
      *
-     *  tag: the lowercase name of the tag
+     *  tag: the lowercase name of the tag.
      *
      *  type: one of...
      *      (none): [tag]parsed[/tag]
@@ -28,13 +28,13 @@ class BBCodeParser
      *  
      *  content: only for unparsed_content, unparsed_equals_content and closed;
      *      the html that should replace the tag; $1 is replaced by the content
-     *      of the tag, $2 contains the unparsed parameter
+     *      of the tag, $2 contains the unparsed parameter.
      *
      *  before: only when content is not used; the html that should be inserted
-     *      before the content; $1 is replaced by the parameter
+     *      before the content; $1 is replaced by the parameter.
      *
      *  after: similar to before in every way, except for it is inserted after
-     *      the content
+     *      the content.
      *
      *  validate: a function that can validate all unparsed content and params;
      *      receives a reference to a parameter or array of parameters (only
@@ -42,7 +42,15 @@ class BBCodeParser
      *
      *  trim: if set to 'inside', whitespace after the opening tag will be
      *      cleared; if set to 'outside', the whitespace after the closing
-     *      tag will be trimmed; 'both' will trim both
+     *      tag will be trimmed; 'both' will trim both.
+     *
+     *  parameters: an array of additional parameters that can be added; the
+     *      key should be the name of the parameter, the value should be
+     *      another array that can have additional properties for the parameter
+     *          match: a regex that the parameters have to match
+     *          optional: if set to anything, the parameter is not required
+     *      the parameters can be accessed in the before, after and content
+     *      by {param} where param is the name of the parameter.
      * 
      * @var array
      */
@@ -88,6 +96,16 @@ class BBCodeParser
                 array(
                     'tag' => 'list',
                     'before' => '<ul class="normal">',
+                    'after' => '</ul>',
+                    'trim' => 'inside'
+                ),
+
+                array(
+                    'tag' => 'list',
+                    'parameters' => array(
+                        'type' => array('match' => '(disc|circle|square|decimal|decimal-leading-zero|lower-roman|upper-roman|lower-greek|lower-latin|upper-latin|armenian|georgian|lower-alpha|upper-alpha|none)')
+                    ),
+                    'before' => '<ul class="normal" style="list-style-type: {type};">',
                     'after' => '</ul>',
                     'trim' => 'inside'
                 ),
@@ -382,10 +400,15 @@ class BBCodeParser
                 if (strtolower(substr($string, $pos + 1, strlen($possible['tag']))) != $possible['tag'])
                     continue;
 
-                // Get the char directly after the tag-name
+                // Get the char directly after the tag-name.
                 $nextChar = substr($string, $pos + 1 + strlen($possible['tag']), 1);
 
-                if (!isset($possible['type']))  // parsed_content, no parameters!
+                if (!empty($possible['parameters']))
+                {
+                    if ($nextChar != ' ')
+                        continue;
+                }
+                elseif (!isset($possible['type']))  // parsed_content, no parameters!
                 {
                     if ($nextChar != ']')
                         continue;
@@ -398,7 +421,7 @@ class BBCodeParser
                     || $possible['type'] == 'unparsed_content'
                     || $possible['type'] == 'unparsed_equals_content')
                 {
-                    // One parameter: equals sign required
+                    // One parameter: equals sign required.
                     if ($nextChar != '=') continue;
                 }
                 elseif ($possible['type'] == 'closed')
@@ -408,8 +431,61 @@ class BBCodeParser
                         && substr($string, $pos + 1 + strlen($possible['tag']), 3) != ' /]') continue;
                 }
 
-                // Well, it seems we got it!
-                $code = $possible;
+                $paramPos = $pos + 1 + strlen($possible['tag']) + 1;
+
+                // Parameter verification is a lot of work =/.
+                if (!empty($possible['parameters']))
+                {
+                    $regex = array();
+                    foreach ($possible['parameters'] as $p => $info)
+                        $regex[] = '(\s+' . $p . '=' . (isset($info['match']) ? $info['match'] : '(.+?)') . ')' . (isset($info['optional']) ? '?' : '');
+
+                    $valid = false;
+                    $regexOrders = self::arrayPermutations($regex);
+                    foreach ($regexOrders as $r)
+                        if (preg_match('~^' . implode('', $r) . '\]~i', substr($string, $paramPos - 1), $matches) != 0)
+                        {
+                            $valid = true;
+                            break;
+                        }
+
+                    // The parameters were not valid.
+                    if (!$valid)
+                        continue;
+
+                    // Create an array of parameters and their values.
+                    $params = array();
+                    for ($i = 1, $n = count($matches); $i < $n; $i += 2)
+                    {
+                        $key = strtok(ltrim($matches[$i]), '=');
+                        $params['{' . $key . '}'] = $matches[$i + 1];
+
+                        // Get rid of the { and $ symbols, because that might go wrong later.
+                        $params['{' . $key . '}'] = strtr($params['{' . $key . '}'], array('$' => '&#036;', '{' => '&#123;'));
+                    }
+
+                    // Make sure our params array is complete.
+                    foreach ($possible['parameters'] as $p => $info)
+                        if (!isset($params['{' . $p . '}']))
+                            $params['{' . $p . '}'] = '';
+
+                    $code = $possible;
+
+                    // Now put in the parameters.
+                    if (isset($code['before']))
+                        $code['before'] = strtr($code['before'], $params);
+                    if (isset($code['after']))
+                        $code['after'] = strtr($code['after'], $params);
+                    if (isset($code['content']))
+                        $code['content'] = strtr($code['content'], $params);
+
+                    // Shift the parameter position because we finished processing the parameters.
+                    $paramPos += strlen($matches[0]) - 1;
+                }
+                else
+                    // Well, it seems we got it!
+                    $code = $possible;
+
                 break;
             }
 
@@ -446,7 +522,7 @@ class BBCodeParser
             if ($code === null)
                 continue;
 
-            $paramPos = $pos + 1 + strlen($code['tag']) + 1;
+            //$paramPos = $pos + 1 + strlen($code['tag']) + 1;
 
             // Actual parsing
             if (!isset($code['type']))  // parsed_content
@@ -517,16 +593,16 @@ class BBCodeParser
                 if ($closePos === false)
                     continue;
 
-                $params = array(
+                $data = array(
                     substr($string, $paramClosePos + 1, $closePos - ($paramClosePos + 1)),
                     substr($string, $paramPos, $paramClosePos - $paramPos)
                 );
 
                 if (isset($code['validate']))
-                    if (!$code['validate'](&$params))
+                    if (!$code['validate'](&$data))
                         continue;
 
-                $content = strtr($code['content'], array('$1' => $params[0], '$2' => $params[1]));
+                $content = strtr($code['content'], array('$1' => $data[0], '$2' => $data[1]));
                 $string = substr($string, 0, $pos) . "\n" . $content . "\n" . substr($string, $closePos + 3 + strlen($code['tag']));
 
                 $pos += strlen($content) - 1 + 2;
@@ -609,6 +685,11 @@ class BBCodeParser
         return $url;
     }
 
+    /**
+     * Extracts the Youtube video id from a string.
+     * @param  string $url A url to the video or the id itself.
+     * @return string      Youtube video id.
+     */
     public static function extractYoutubeId($url)
     {
         if (preg_match('/youtube\.com\/watch\?v=([^\&\?\/]+)/', $url, $id))
@@ -621,5 +702,35 @@ class BBCodeParser
             return $id[1];
         else
             return $url;
+    }
+
+    /**
+     * Gives all permutations of an array.
+     * @param  array $array The array to be permuted.
+     * @return array        An array of all permutations of the elements from the input array.
+     */
+    public static function arrayPermutations($array)
+    {
+        $c = count($array);
+
+        // Base case for recursive function.
+        if ($c == 1)
+            return array($array);
+
+        $perms = array();
+
+        for ($i = 0; $i < $c; $i++)
+        {
+            // Create all permutations of the array without one element.
+            $p = self::arrayPermutations(array_splice($array, $i, 1));
+            // Prepend the missing element to all permutations.
+            foreach ($p as $q)
+            {
+                array_unshift($q, $array[$i]);
+                $perms[] = $q;
+            }
+        }
+
+        return $perms;
     }
 }
